@@ -1,0 +1,105 @@
+# pipeline_config.yaml
+# Ground-truth expectations for the dataset. Interns' pipelines/agents should
+# validate against this file (or hardcode equivalent checks) — it's the
+# "contract" the agent is enforcing.
+#
+# Ranges below assume the default generator settings:
+#   --customers 500 --products 60 --orders-per-day 300 --events-per-day 1200
+# Recompute if you change generator args for a cohort.
+
+datasets:
+  customers:
+    source: csv
+    path_pattern: "customers.csv"
+    primary_key: customer_id
+    expected_row_count:
+      min: 480
+      max: 520
+    schema:
+      customer_id: string
+      name: string
+      email: string
+      region: string
+      signup_date: date
+    freshness_sla: null   # dimension table, loaded once / rarely
+
+  products:
+    source: csv
+    path_pattern: "products.csv"
+    primary_key: product_id
+    expected_row_count:
+      min: 55
+      max: 65
+    schema:
+      product_id: string
+      name: string
+      category: string
+      price: float
+    freshness_sla: null
+
+  orders:
+    source: csv
+    path_pattern: "orders/orders_{date}.csv"
+    primary_key: order_id
+    foreign_keys:
+      customer_id: customers.customer_id
+      product_id: products.product_id
+    expected_row_count_per_batch:
+      min: 240          # 20% below nominal 300/day
+      max: 360           # 20% above nominal
+    schema:
+      order_id: string
+      customer_id: string
+      product_id: string
+      order_ts: timestamp
+      quantity: integer
+      order_total: float
+      status: string
+    null_tolerance:
+      order_total: 0.02   # max 2% nulls tolerated before flagging
+      customer_id: 0.0    # zero tolerance
+    freshness_sla:
+      max_delay_hours: 26   # batch for day D must land by D+1 02:00
+
+  events:
+    source: mock_api
+    path_pattern: "events/events_{date}.jsonl"
+    primary_key: event_id
+    foreign_keys:
+      customer_id: customers.customer_id
+    expected_row_count_per_batch:
+      min: 900
+      max: 1500
+    schema:
+      event_id: string
+      customer_id: string
+      event_type: string
+      session_id: string
+      event_ts: timestamp
+    freshness_sla:
+      max_delay_hours: 6
+
+# BigQuery target dataset — fill in during setup (see gcp-setup/GCP_SETUP.md)
+bigquery:
+  project_id: "<YOUR_GCP_PROJECT_ID>"
+  dataset: "pipeline_intern_<INTERN_HANDLE>"
+  location: "US"
+  tables:
+    customers: "dim_customers"
+    products: "dim_products"
+    orders: "fct_orders"      # partition by order_ts (DAY), cluster by customer_id
+    events: "fct_events"      # partition by event_ts (DAY), cluster by customer_id
+
+agent:
+  # Which fault categories are eligible for auto-remediation vs must escalate.
+  # Interns should propose/justify their own version of this table in their
+  # design doc — this is a reviewer reference / starting point, not something
+  # to hand out verbatim.
+  remediation_policy:
+    duplicate_ingestion: auto_fix    # safe: dedupe by primary key
+    volume_anomaly_spike: auto_fix    # safe: same as above, dedupe handles it
+    schema_drift: escalate
+    volume_anomaly_drop: escalate
+    null_spike: escalate
+    referential_break: escalate
+    staleness: escalate
