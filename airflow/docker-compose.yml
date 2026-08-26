@@ -23,19 +23,18 @@ x-airflow-common:
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
-    # Point this at your GCP service-account key (see gcp-setup/GCP_SETUP.md)
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: '120'
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/config/gcp-service-account.json
     _PIP_ADDITIONAL_REQUIREMENTS: >-
       apache-airflow-providers-google
       pandas
   volumes:
-    - ./dags:/opt/airflow/dags
+    - ../dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
-    - ./config:/opt/airflow/config
-    - ./data:/opt/airflow/data
-  user: "${AIRFLOW_UID:-50000}:0"
+    - ../config:/opt/airflow/config
+    - ../data:/opt/airflow/data
+
   depends_on:
     &airflow-common-depends-on
     postgres:
