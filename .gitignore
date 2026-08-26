@@ -1,0 +1,30 @@
+# Environment & Credentials
+.env
+config/gcp-service-account.json
+*.json
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Airflow Logs & Databases
+airflow/logs/
+logs/
+*.log
+airflow.db
+airflow-webserver.pid
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
