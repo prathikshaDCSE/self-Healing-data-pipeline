@@ -7,17 +7,13 @@ def check_file_exists(file_path):
     Check whether the expected data file exists.
     """
     exists = os.path.exists(file_path)
-
     print(f"[REMEDIATION] Checking file: {file_path}")
     print(f"[REMEDIATION] File exists: {exists}")
-
     return exists
-
 
 def retry_task(task_id):
     """
     Placeholder for Airflow task retry.
-
     We will connect this to Airflow after
     testing the remediation logic.
     """
@@ -29,16 +25,13 @@ def retry_task(task_id):
         "status": "retry_requested"
     }
 
-
 def execute_remediation(task_id, failure_type, recommended_action, safe):
     """
     Execute only predefined and approved remediation actions.
     """
-
     print("\n" + "=" * 70)
     print("REMEDIATION CONTROLLER")
     print("=" * 70)
-
     print(f"Task: {task_id}")
     print(f"Failure type: {failure_type}")
     print(f"AI recommendation: {recommended_action}")
