@@ -95,6 +95,33 @@ def get_dag_run_status(dag_id, dag_run_id):
 
 
 # ============================================================
+# GET ALL DAG RUNS
+# ============================================================
+
+def get_dag_runs(dag_id):
+    """
+    Get all DAG runs for a specific DAG.
+    """
+
+    session = get_airflow_session()
+
+    url = (
+        f"{AIRFLOW_API_URL}/dags/"
+        f"{dag_id}/dagRuns"
+    )
+
+    response = session.get(
+        url,
+        timeout=30
+    )
+
+    response.raise_for_status()
+
+    return response.json().get("dag_runs", [])
+
+
+
+# ============================================================
 # GET ALL TASK INSTANCES
 # ============================================================
 
@@ -335,8 +362,46 @@ def print_failure_evidence(evidence):
 
 
 # ============================================================
+# CLEAR TASK INSTANCE (TRIGGER RETRY)
+# ============================================================
+
+def clear_task_instance(dag_id, dag_run_id, task_id):
+    """
+    Clear a specific task instance in Airflow to trigger a retry.
+    Returns the response JSON.
+    """
+
+    session = get_airflow_session()
+
+    url = (
+        f"{AIRFLOW_API_URL}/dags/"
+        f"{dag_id}/clearTaskInstances"
+    )
+
+    payload = {
+        "dry_run": False,
+        "reset_dag_runs": True,
+        "only_failed": True,
+        "task_ids": [task_id],
+        "dag_run_id": dag_run_id
+    }
+
+
+    response = session.post(
+        url,
+        json=payload,
+        timeout=30
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+# ============================================================
 # MAIN TEST
 # ============================================================
+
 
 if __name__ == "__main__":
 
