@@ -37,7 +37,7 @@ from google.cloud import bigquery
 PROJECT_ID = "river-pillar-506507-b4"
 DATASET_ID = "pipeline_prathiksha"
 BIGQUERY_LOCATION = "US"
-MAX_QUERY_BYTES_BILLED = 10 * 1024 * 1024
+MAX_QUERY_BYTES_BILLED = 100 * 1024 * 1024
 
 
 def on_task_failure(context):

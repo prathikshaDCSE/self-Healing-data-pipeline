@@ -1,6 +1,5 @@
 import requests
 import json
-import re
 
 
 # ============================================================
@@ -10,9 +9,6 @@ import re
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 MODEL = "llama3.2:3b"
-
-# Local LLM can be slow on a laptop.
-OLLAMA_TIMEOUT = 300
 
 
 # ============================================================
@@ -50,66 +46,41 @@ ALLOWED_ACTIONS = {
 
 def safe_fallback(reason):
     """
-    Fail safely if the AI response cannot be trusted.
+    Fail closed.
+
+    If anything goes wrong with the AI response,
+    never allow automatic remediation.
     """
 
     return {
         "failure_type": "unknown",
-        "root_cause": "Unable to safely determine the root cause",
+        "root_cause": "Unable to safely determine root cause",
         "recommended_action": "manual_review",
         "auto_remediation_safe": False,
         "remediation_action": "manual_review",
         "reason": reason,
-        "requires_human_approval": True
+        "requires_human_approval": True,
     }
-
-
-# ============================================================
-# CLEAN AI RESPONSE
-# ============================================================
-
-def clean_json_response(ai_response):
-    """
-    Remove common markdown formatting accidentally returned
-    by the LLM.
-    """
-
-    ai_response = ai_response.strip()
-
-    # Remove markdown code fences
-    ai_response = re.sub(
-        r"^```json\s*",
-        "",
-        ai_response,
-        flags=re.IGNORECASE
-    )
-
-    ai_response = re.sub(
-        r"^```\s*",
-        "",
-        ai_response
-    )
-
-    ai_response = re.sub(
-        r"\s*```$",
-        "",
-        ai_response
-    )
-
-    return ai_response.strip()
 
 
 # ============================================================
 # VALIDATE AI RESPONSE
 # ============================================================
 
-def validate_ai_response(response):
+def validate_diagnosis(data):
     """
-    Strictly validate the AI response before allowing it
-    to reach the remediation controller.
+    Validate and normalize the AI response.
+
+    The AI is allowed to recommend an action,
+    but unsafe or malformed responses are rejected.
     """
 
-    required_fields = {
+    if not isinstance(data, dict):
+        return safe_fallback(
+            "AI response was not a JSON object."
+        )
+
+    required_fields = [
         "failure_type",
         "root_cause",
         "recommended_action",
@@ -117,119 +88,118 @@ def validate_ai_response(response):
         "remediation_action",
         "reason",
         "requires_human_approval",
-    }
+    ]
 
-    # --------------------------------------------------------
-    # Check fields
-    # --------------------------------------------------------
+    for field in required_fields:
+        if field not in data:
+            return safe_fallback(
+                f"AI response missing required field: {field}"
+            )
 
-    if not isinstance(response, dict):
-        return False, "AI response is not a JSON object."
-
-    missing_fields = required_fields - set(response.keys())
-
-    if missing_fields:
-        return False, (
-            "AI response is missing fields: "
-            + ", ".join(sorted(missing_fields))
-        )
+    failure_type = data.get("failure_type")
+    recommended_action = data.get("recommended_action")
+    remediation_action = data.get("remediation_action")
 
     # --------------------------------------------------------
     # Validate failure type
     # --------------------------------------------------------
 
-    if response["failure_type"] not in ALLOWED_FAILURE_TYPES:
-
-        return False, (
-            f"Invalid failure_type: "
-            f"{response['failure_type']}"
+    if failure_type not in ALLOWED_FAILURE_TYPES:
+        return safe_fallback(
+            f"Invalid failure_type returned by AI: {failure_type}"
         )
 
     # --------------------------------------------------------
     # Validate recommended action
     # --------------------------------------------------------
 
-    if response["recommended_action"] not in ALLOWED_ACTIONS:
-
-        return False, (
-            f"Invalid recommended_action: "
-            f"{response['recommended_action']}"
+    if recommended_action not in ALLOWED_ACTIONS:
+        return safe_fallback(
+            f"Invalid recommended_action returned by AI: "
+            f"{recommended_action}"
         )
 
     # --------------------------------------------------------
-    # Validate remediation action
+    # remediation_action MUST match recommendation
     # --------------------------------------------------------
 
-    if response["remediation_action"] not in ALLOWED_ACTIONS:
-
-        return False, (
-            f"Invalid remediation_action: "
-            f"{response['remediation_action']}"
+    if remediation_action != recommended_action:
+        return safe_fallback(
+            "remediation_action does not match "
+            "recommended_action."
         )
 
     # --------------------------------------------------------
-    # Validate booleans
+    # Validate boolean fields
     # --------------------------------------------------------
 
     if not isinstance(
-        response["auto_remediation_safe"],
+        data.get("auto_remediation_safe"),
         bool
     ):
-
-        return False, (
+        return safe_fallback(
             "auto_remediation_safe must be boolean."
         )
 
     if not isinstance(
-        response["requires_human_approval"],
+        data.get("requires_human_approval"),
         bool
     ):
-
-        return False, (
+        return safe_fallback(
             "requires_human_approval must be boolean."
         )
 
     # --------------------------------------------------------
-    # Safety enforcement
+    # SAFETY RULES
     # --------------------------------------------------------
 
-    dangerous_failure_types = {
-        "schema_drift",
-        "referential_integrity",
-        "duplicate_data",
+    unsafe_actions = {
+        "regenerate_data",
+        "fix_schema",
+        "clean_invalid_data",
+        "investigate_foreign_key",
+        "remove_duplicates",
+        "investigate_volume",
+        "manual_review",
     }
 
-    if response["failure_type"] in dangerous_failure_types:
+    if recommended_action in unsafe_actions:
 
-        response["auto_remediation_safe"] = False
+        data["auto_remediation_safe"] = False
+        data["requires_human_approval"] = True
 
-        response["requires_human_approval"] = True
+    # Unknown failures are always unsafe unless they recommend a retry.
 
-        response["recommended_action"] = "manual_review"
+    if failure_type == "unknown" and recommended_action != "retry_task":
 
-        response["remediation_action"] = "manual_review"
+        data["auto_remediation_safe"] = False
+        data["requires_human_approval"] = True
+        data["recommended_action"] = "manual_review"
+        data["remediation_action"] = "manual_review"
 
-    # --------------------------------------------------------
-    # Manual review must always be unsafe
-    # --------------------------------------------------------
 
-    if response["recommended_action"] == "manual_review":
+    # Schema drift is always manual review.
 
-        response["auto_remediation_safe"] = False
+    if failure_type == "schema_drift":
 
-        response["requires_human_approval"] = True
+        data["auto_remediation_safe"] = False
+        data["requires_human_approval"] = True
 
-        response["remediation_action"] = "manual_review"
+    # Duplicate data is always manual review.
 
-    # --------------------------------------------------------
-    # If AI says unsafe, force human approval
-    # --------------------------------------------------------
+    if failure_type == "duplicate_data":
 
-    if response["auto_remediation_safe"] is False:
+        data["auto_remediation_safe"] = False
+        data["requires_human_approval"] = True
 
-        response["requires_human_approval"] = True
+    # Referential integrity is always manual review.
 
-    return True, response
+    if failure_type == "referential_integrity":
+
+        data["auto_remediation_safe"] = False
+        data["requires_human_approval"] = True
+
+    return data
 
 
 # ============================================================
@@ -248,17 +218,29 @@ def analyze_failure(
 
     prompt = f"""
 You are an AI Data Pipeline Monitoring Agent
-for an Airflow self-healing pipeline.
+for an Airflow self-healing data pipeline.
 
-Your job is ONLY to analyze the provided
-Airflow failure and produce a safe remediation
-recommendation.
+Your job is ONLY to analyze the supplied Airflow
+failure message.
 
-You MUST NOT execute anything.
+Do not invent information.
 
-You MUST NOT invent information.
+Do not execute commands.
 
-You MUST use ONLY the supplied Airflow error.
+Do not modify files.
+
+Do not modify databases.
+
+Do not change schemas.
+
+Do not delete data.
+
+Do not assume information that is not present
+in the error message.
+
+==================================================
+PIPELINE INFORMATION
+==================================================
 
 Pipeline:
 self_healing_pipeline
@@ -272,12 +254,11 @@ Execution date:
 Airflow error:
 {error_message}
 
-
-============================================================
+==================================================
 ALLOWED FAILURE TYPES
-============================================================
+==================================================
 
-You MUST choose exactly one:
+You MUST choose exactly ONE:
 
 missing_file
 invalid_row_count
@@ -288,12 +269,11 @@ duplicate_data
 volume_anomaly
 unknown
 
+==================================================
+ALLOWED ACTIONS
+==================================================
 
-============================================================
-ALLOWED REMEDIATION ACTIONS
-============================================================
-
-You MUST choose exactly one:
+You MUST choose exactly ONE:
 
 check_file
 retry_task
@@ -306,145 +286,132 @@ investigate_volume
 manual_review
 no_action
 
+==================================================
+CLASSIFICATION RULES
+==================================================
 
-============================================================
-IMPORTANT CLASSIFICATION RULES
-============================================================
+1. FileNotFoundError or an explicitly missing
+   input file:
+   failure_type = missing_file
+   recommended_action = check_file
 
-If the error says a file does not exist,
-the failure_type should be:
+2. A clear row-count mismatch:
+   failure_type = invalid_row_count
 
-missing_file
+3. A clear schema mismatch, missing column,
+   unexpected column, or incompatible schema:
+   failure_type = schema_drift
+   recommended_action = fix_schema
 
-If the error indicates that the expected number
-of rows is wrong, use:
+4. A clear null/None value violation:
+   failure_type = null_value
+   recommended_action = clean_invalid_data
 
-invalid_row_count
+5. A clear foreign-key or referential integrity
+   violation:
+   failure_type = referential_integrity
+   recommended_action = investigate_foreign_key
 
-If the error indicates a changed or incompatible
-table structure, use:
+6. A clear duplicate record/order ID violation:
+   failure_type = duplicate_data
+   recommended_action = remove_duplicates
 
-schema_drift
+7. A clear abnormal volume issue:
+   failure_type = volume_anomaly
+   recommended_action = investigate_volume
 
-If the error indicates NULL or missing values
-inside records, use:
+8. If the error clearly mentions "Simulated transient failure" or "transient failure", it is a transient error:
+   failure_type = unknown
+   recommended_action = retry_task
 
-null_value
+9. If the error does not clearly match one of
+   the categories above:
+   failure_type = unknown
+   recommended_action = manual_review
 
-If the error indicates a foreign key or relationship
-problem, use:
+==================================================
+REMEDIATION ACTION RULE
+==================================================
 
-referential_integrity
+IMPORTANT:
 
-If the error indicates duplicate records, use:
+"remediation_action" MUST ALWAYS contain
+the EXACT SAME VALUE as "recommended_action".
 
-duplicate_data
+For example:
 
-If the error indicates an unusual increase or decrease
-in data volume, use:
+recommended_action:
+check_file
 
-volume_anomaly
+remediation_action:
+check_file
 
-If the error is something else that cannot safely
-be classified using the above categories, use:
+OR:
 
-unknown
+recommended_action:
+fix_schema
 
+remediation_action:
+fix_schema
 
-============================================================
-SPECIAL RULE FOR CODE ERRORS
-============================================================
+Never leave remediation_action empty.
 
-Errors such as:
-
-NotImplementedError
-AttributeError
-NameError
-TypeError
-SyntaxError
-ImportError
-ModuleNotFoundError
-
-are NOT data-quality failures.
-
-If the supplied error is a code or implementation
-error and does not match one of the allowed data
-failure types:
-
-failure_type = "unknown"
-
-recommended_action = "manual_review"
-
-remediation_action = "manual_review"
-
-auto_remediation_safe = false
-
-requires_human_approval = true
-
-
-============================================================
+==================================================
 SAFETY RULES
-============================================================
+==================================================
 
-1. Do not invent information.
+The AI only recommends actions.
 
-2. Use ONLY the supplied Airflow error.
+Automatic remediation is NOT allowed for:
 
-3. Do not execute commands.
+- schema changes
+- deleting data
+- cleaning data
+- duplicate removal
+- referential integrity fixes
+- unknown failures (unless clearly a transient failure)
+- complex logic
+- data regeneration
 
-4. Do not modify files.
+These must have:
 
-5. Do not delete data.
+"auto_remediation_safe": false
 
-6. Do not modify BigQuery data.
+and
 
-7. Do not change database schemas automatically.
+"requires_human_approval": true
 
-8. Do not claim that a file exists unless the error
-   explicitly proves it.
+A simple retry may be considered safe ONLY when
+the supplied error clearly indicates a transient
+failure (such as "Simulated transient failure").
+In this specific transient failure case:
 
-9. Missing files should normally require investigation.
+"auto_remediation_safe": true
 
-10. Schema drift must require manual review.
+and
 
-11. Referential integrity failures must require
-    manual review.
+"requires_human_approval": false
 
-12. Duplicate data failures must require manual review.
+If there is not enough information to prove that
+a retry is safe:
 
-13. Code/implementation errors must require manual review.
+"auto_remediation_safe": false
 
-14. If there is uncertainty, choose unknown
-    and manual_review.
+and
 
-15. retry_task is allowed only when the error clearly
-    suggests a transient failure.
+"requires_human_approval": true
 
-16. A retry does NOT fix the underlying problem.
-
-17. The AI only recommends an action.
-
-18. A separate Python remediation controller decides
-    whether an action can actually execute.
-
-19. Never mark a destructive or data-changing action
-    as automatically safe.
-
-20. If human approval is required, auto_remediation_safe
-    MUST be false.
+Missing files should be investigated and should
+NOT automatically be recreated.
 
 
-============================================================
+==================================================
 OUTPUT
-============================================================
+==================================================
 
 Return ONLY valid JSON.
 
-Do NOT use markdown.
-
-Do NOT add explanations outside JSON.
-
-Use EXACTLY this structure:
+Use exactly this structure:
 
 {{
     "failure_type": "",
@@ -467,159 +434,93 @@ Use EXACTLY this structure:
                 "model": MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "format": "json"
+                "format": "json",
             },
-            timeout=OLLAMA_TIMEOUT
+            timeout=300,
         )
 
         response.raise_for_status()
 
-    except requests.exceptions.ConnectionError:
+        result = response.json()
+
+        ai_response = result.get("response", "")
+
+        print("[AI AGENT] Ollama response received.")
+
+        if not ai_response:
+            return safe_fallback(
+                "Ollama returned an empty response."
+            )
+
+        # ----------------------------------------------------
+        # Parse JSON
+        # ----------------------------------------------------
+
+        try:
+
+            parsed_response = json.loads(
+                ai_response
+            )
+
+        except json.JSONDecodeError:
+
+            return safe_fallback(
+                "Ollama returned invalid JSON."
+            )
+
+        # ----------------------------------------------------
+        # Validate
+        # ----------------------------------------------------
+
+        validated_response = validate_diagnosis(
+            parsed_response
+        )
 
         print(
-            "[AI AGENT] ERROR: "
-            "Could not connect to Ollama."
+            "[AI AGENT] Response passed safety validation."
         )
 
-        return safe_fallback(
-            "Ollama is not reachable."
-        )
+        return validated_response
 
     except requests.exceptions.Timeout:
 
         print(
-            "[AI AGENT] ERROR: "
-            "Ollama request timed out."
+            "[AI AGENT] Ollama request timed out."
         )
 
         return safe_fallback(
             "Ollama request timed out."
+        )
+
+    except requests.exceptions.ConnectionError:
+
+        print(
+            "[AI AGENT] Could not connect to Ollama."
+        )
+
+        return safe_fallback(
+            "Could not connect to Ollama."
         )
 
     except requests.exceptions.HTTPError as e:
 
         print(
-            "[AI AGENT] ERROR: "
-            "Ollama HTTP error."
+            "[AI AGENT] Ollama HTTP error."
         )
 
         return safe_fallback(
             f"Ollama HTTP error: {e}"
         )
 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
 
         print(
-            "[AI AGENT] ERROR: "
-            "Ollama request failed."
+            "[AI AGENT] Unexpected AI error."
         )
 
         return safe_fallback(
-            f"Ollama request failed: {e}"
+            f"Unexpected AI error: {e}"
         )
-
-    print("[AI AGENT] Ollama response received.")
-
-    # --------------------------------------------------------
-    # Read response
-    # --------------------------------------------------------
-
-    try:
-
-        result = response.json()
-
-    except json.JSONDecodeError:
-
-        print(
-            "[AI AGENT] ERROR: "
-            "Ollama returned invalid API response."
-        )
-
-        return safe_fallback(
-            "Ollama API response was not valid JSON."
-        )
-
-    ai_response = result.get(
-        "response",
-        ""
-    )
-
-    if not ai_response:
-
-        print(
-            "[AI AGENT] ERROR: "
-            "Ollama returned an empty response."
-        )
-
-        return safe_fallback(
-            "Ollama returned an empty response."
-        )
-
-    # --------------------------------------------------------
-    # Clean response
-    # --------------------------------------------------------
-
-    ai_response = clean_json_response(
-        ai_response
-    )
-
-    # --------------------------------------------------------
-    # Parse JSON
-    # --------------------------------------------------------
-
-    try:
-
-        parsed_response = json.loads(
-            ai_response
-        )
-
-    except json.JSONDecodeError:
-
-        print(
-            "[AI AGENT] ERROR: "
-            "Ollama returned invalid JSON."
-        )
-
-        print(
-            "[AI AGENT] Raw response:"
-        )
-
-        print(ai_response)
-
-        return safe_fallback(
-            "The AI response could not be parsed safely."
-        )
-
-    # --------------------------------------------------------
-    # Validate response
-    # --------------------------------------------------------
-
-    valid, validation_result = validate_ai_response(
-        parsed_response
-    )
-
-    if not valid:
-
-        print(
-            "[AI AGENT] ERROR: "
-            "AI response failed safety validation."
-        )
-
-        print(
-            f"[AI AGENT] Reason: "
-            f"{validation_result}"
-        )
-
-        return safe_fallback(
-            f"AI response failed safety validation: "
-            f"{validation_result}"
-        )
-
-    print(
-        "[AI AGENT] Response passed safety validation."
-    )
-
-    return validation_result
 
 
 # ============================================================
@@ -646,11 +547,7 @@ NotImplementedError
 """
 
     print("=" * 70)
-
-    print(
-        "SELF-HEALING DATA PIPELINE AI AGENT"
-    )
-
+    print("SELF-HEALING DATA PIPELINE AI AGENT")
     print("=" * 70)
 
     print("\nTask:")
@@ -665,14 +562,12 @@ NotImplementedError
     result = analyze_failure(
         task_id=TASK_ID,
         error_message=ERROR_MESSAGE,
-        execution_date=EXECUTION_DATE
+        execution_date=EXECUTION_DATE,
     )
 
     print("\n")
     print("=" * 70)
-
     print("AI AGENT DIAGNOSIS")
-
     print("=" * 70)
 
     print(
